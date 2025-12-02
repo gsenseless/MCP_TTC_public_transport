@@ -5,6 +5,7 @@ import httpx
 import os
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+import time
 
 load_dotenv()
 
@@ -21,6 +22,7 @@ API_KEY = os.getenv("TTC_API_KEY")
 if not API_KEY:
     raise ValueError("TTC_API_KEY environment variable is not set. Please check your .env file.")
 DEFAULT_LOCALE = "en"
+#DEFAULT_LOCALE = "ka"
 REQUEST_TIMEOUT = 30.0
 
 
@@ -62,7 +64,32 @@ async def make_request(url: str, custom_params: dict[str, str] | None = None) ->
         except Exception as e:
             logger.error(f"Unexpected error fetching TTC data: {e}")
             return None
+            return None
 
+
+# Global cache for stops
+STOPS_CACHE = None
+STOPS_CACHE_TIMESTAMP = 0
+CACHE_DURATION = 3600*24
+
+async def get_cached_stops() -> list[dict[str, Any]] | None:
+    """Get stops data from cache or fetch from API if expired."""
+    global STOPS_CACHE, STOPS_CACHE_TIMESTAMP
+    
+    current_time = time.time()
+    if STOPS_CACHE and (current_time - STOPS_CACHE_TIMESTAMP < CACHE_DURATION):
+        logger.info("Using cached stops data")
+        return STOPS_CACHE
+        
+    url = f"{API_BASE}/stops"
+    data = await make_request(url)
+    
+    if data:
+        STOPS_CACHE = data
+        STOPS_CACHE_TIMESTAMP = current_time
+        logger.info("Refreshed stops cache")
+        
+    return data
 
 @mcp.tool()
 async def arrival_times(stop_id: str, ignore_scheduled: bool = False) -> str:
@@ -70,7 +97,6 @@ async def arrival_times(stop_id: str, ignore_scheduled: bool = False) -> str:
 
     Args:
         stop_id: four-digit ID of a bus stop
-        ignore_scheduled: whether to ignore scheduled arrival times (default: False)
     """
     url = f"{API_BASE}/stops/1:{stop_id}/arrival-times"
     custom_params = {"ignoreScheduledArrivalTimes": str(ignore_scheduled).lower()}
@@ -93,19 +119,86 @@ async def arrival_times(stop_id: str, ignore_scheduled: bool = False) -> str:
 
 
 @mcp.tool()
-async def get_all_stops() -> str:
-    """Get all bus stops in the system.
+async def search_stop_by_name(name: str) -> str:
+    """Search for bus stops by name in Tbilisi.
+    
+    Args:
+        name: Partial or full name of the bus stop to search for (case-insensitive)
     
     Returns:
-        JSON string with all bus stops in Tbilisi.
+        JSON string with matching stops (id, code, name, lat, lon, vehicleMode)
     """
-    url = f"{API_BASE}/stops"
-    data = await make_request(url)
+
+    data = await get_cached_stops()
     
     if not data:
         return "Unable to fetch stops."
     
-    return json.dumps(data, indent=2)
+    # Filter stops by name (case-insensitive partial match)
+    search_term = name.lower()
+    matching_stops = [
+        stop for stop in data 
+        if search_term in stop.get('name', '').lower()
+    ]
+    
+    if not matching_stops:
+        return f"No stops found matching '{name}'."
+    
+    return json.dumps(matching_stops, indent=2)
+
+
+@mcp.tool()
+async def search_stops_nearby(lat: float, lon: float) -> str:
+    """Find the 5 closest bus stops to given coordinates in Tbilisi.
+    
+    Args:
+        lat: Latitude of the location
+        lon: Longitude of the location
+    
+    Returns:
+        JSON string with the 5 nearest stops, sorted by distance
+    """
+    import math
+    
+    data = await get_cached_stops()
+    
+    if not data:
+        return "Unable to fetch stops."
+    
+    def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate distance between two coordinates using Haversine formula (in km)."""
+        R = 6371  # Earth's radius in kilometers
+        
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        
+        a = (math.sin(dlat / 2) ** 2 + 
+             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
+             math.sin(dlon / 2) ** 2)
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        return R * c
+    
+    # Calculate distance for each stop and add it to the stop data
+    stops_with_distance = []
+    for stop in data:
+        stop_lat = stop.get('lat')
+        stop_lon = stop.get('lon')
+        
+        if stop_lat is not None and stop_lon is not None:
+            distance = calculate_distance(lat, lon, stop_lat, stop_lon)
+            stop_copy = stop.copy()
+            stop_copy['distance_km'] = round(distance, 3)
+            stops_with_distance.append(stop_copy)
+    
+    # Sort by distance and get the 5 closest
+    stops_with_distance.sort(key=lambda x: x['distance_km'])
+    nearest_stops = stops_with_distance[:5]
+    
+    if not nearest_stops:
+        return "No stops found."
+    
+    return json.dumps(nearest_stops, indent=2)
 
 
 @mcp.tool()
@@ -186,16 +279,15 @@ async def get_stop_routes(stop_id: str) -> str:
 if __name__ == "__main__":
     # Initialize and run the server
     # Expose via HTTP for remote access
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    #mcp.run(transport="http", host="0.0.0.0", port=8000)
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
     
     # For testing examples:
     #import asyncio
     #asyncio.run(arrival_times("4115"))
-    #asyncio.run(get_all_stops())
+    #asyncio.run(search_stop_by_name("Freedom"))
+    #asyncio.run(search_stops_nearby(41.7151, 44.8271))
     #asyncio.run(get_stop("4115"))
     #asyncio.run(get_all_routes())
     #asyncio.run(plan_trip(41.7151, 44.8271, 41.7255, 44.7943))
-    #asyncio.run(get_bus_polyline("101"))
-    #asyncio.run(get_bus_locations("101"))
     #asyncio.run(get_stop_routes("4115"))
-    #asyncio.run(get_bus_stops("101"))

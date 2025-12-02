@@ -40,7 +40,8 @@ I don't know the oficial way to obtain the TTC API key, but you can simply googl
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `arrival_times` | Get real-time arrivals for a stop | `stop_id`, `ignore_scheduled` (optional) |
-| `get_all_stops` | List all bus stops | - |
+| `search_stop_by_name` | Search for stops by name | `name` |
+| `search_stops_nearby` | Find 5 closest stops to coordinates | `lat`, `lon` |
 | `get_stop` | Get stop details | `stop_id` |
 | `get_all_routes` | List all routes | - |
 | `plan_trip` | Plan a trip between coordinates | `from_lat`, `from_lng`, `to_lat`, `to_lng` |
